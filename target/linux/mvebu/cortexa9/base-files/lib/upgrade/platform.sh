@@ -101,6 +101,9 @@ platform_do_upgrade() {
 	linksys,wrt32x)
 		platform_do_upgrade_linksys "$1"
 		;;
+	synology,ds216j)
+		synology_ds216j_do_upgrade "$1"
+		;;
 	*)
 		default_do_upgrade "$1"
 		;;

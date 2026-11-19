@@ -75,7 +75,8 @@ methode,edpu)
 	ubootenv_add_uci_config "/dev/mtd0" "0x180000" "0x10000" "0x10000"
 	fi
 	;;
-synology,ds213j)
+synology,ds213j|\
+synology,ds216j)
 	ubootenv_add_mtd "u-boot-env" "0x0" "0x10000" "0x10000"
 	;;
 zyxel,nas326)

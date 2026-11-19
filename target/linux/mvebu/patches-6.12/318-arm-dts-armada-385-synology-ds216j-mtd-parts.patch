@@ -1,0 +1,93 @@
+From: Simon Etzlstorfer <etzisim@gmail.com>
+Date: Mon, 16 Nov 2026 12:10:00 +0100
+Subject: arm: dts: armada-385: synology-ds216j: add mtd partitions
+
+Set up the flash layout used by OpenWrt and read the MAC address from
+the vendor partition. The rootfs partition carries the linux,rootfs
+property, so the kernel finds its root filesystem without a root= on
+the command line.
+
+Signed-off-by: Simon Etzlstorfer <etzisim@gmail.com>
+---
+--- a/arch/arm/boot/dts/marvell/armada-385-synology-ds216j.dts
++++ b/arch/arm/boot/dts/marvell/armada-385-synology-ds216j.dts
+@@ -279,6 +279,9 @@
+ 	bm,pool-long = <0>;
+ 	bm,pool-short = <1>;
+ 	max-speed = <1000>;
++
++	nvmem-cells = <&macaddr_vendor_0>;
++	nvmem-cell-names = "mac-address";
+ };
+ 
+ &mdio {
+@@ -350,6 +353,69 @@
+ 		reg = <0>; /* Chip select 0 */
+ 		spi-max-frequency = <50000000>;
+ 		m25p,fast-read;
++
++		/*
++		 * The squashfs is at the beginning of the "rootfs"
++		 * partition, the kernel splits the space behind it off as
++		 * "rootfs_data" for the JFFS2 overlay. There must not be
++		 * a second partition with that name, otherwise the
++		 * overlay is not found.
++		 */
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 { /* u-boot */
++				label = "u-boot";
++				reg = <0x00000000 0x000e0000>; /* 896KB */
++				read-only;
++			};
++
++			partition@e0000 { /* device tree used by DSM */
++				label = "dtb";
++				reg = <0x000e0000 0x00010000>; /* 64KB */
++				read-only;
++			};
++
++			mtd_kernel: partition@f0000 { /* uImage */
++				label = "kernel";
++				reg = <0x000f0000 0x00400000>; /* 4096KB */
++			};
++
++			mtd_rootfs: partition@4f0000 { /* squashfs and overlay */
++				label = "rootfs";
++				reg = <0x004f0000 0x002e0000>; /* 2944KB */
++				linux,rootfs;
++			};
++
++			partition@7d0000 { /* MAC address and serial number */
++				label = "vendor";
++				reg = <0x007d0000 0x00010000>; /* 64KB */
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					macaddr_vendor_0: macaddr@0 {
++						reg = <0x0 0x6>;
++					};
++				};
++			};
++
++			partition@7e0000 { /* u-boot environment */
++				label = "u-boot-env";
++				reg = <0x007e0000 0x00010000>; /* 64KB */
++			};
++
++			partition@7f0000 { /* FIS directory */
++				label = "fis";
++				reg = <0x007f0000 0x00010000>; /* 64KB */
++				read-only;
++			};
++		};
+ 	};
+ };
+ 

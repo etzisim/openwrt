@@ -1,0 +1,439 @@
+From: Simon Etzlstorfer <etzisim@gmail.com>
+Date: Mon, 16 Nov 2026 12:00:00 +0100
+Subject: arm: dts: armada-385: synology-ds216j: add device tree
+
+The DS216j is a two bay NAS based on the Marvell Armada 385 SoC with
+512 MB of RAM, two SATA ports, two USB 3.0 ports and 8 MB of SPI NOR
+flash.
+
+The hardware description is based on the device trees for the Synology
+DS116 and DS213j and on the DS216j specific description by Alexei
+Evdokimenko.
+
+Signed-off-by: Simon Etzlstorfer <etzisim@gmail.com>
+---
+--- a/arch/arm/boot/dts/marvell/Makefile
++++ b/arch/arm/boot/dts/marvell/Makefile
+@@ -44,6 +44,7 @@ dtb-$(CONFIG_MACH_ARMADA_38X) += \
+ 	armada-385-linksys-rango.dtb \
+ 	armada-385-linksys-shelby.dtb \
+ 	armada-385-synology-ds116.dtb \
++	armada-385-synology-ds216j.dtb \
+ 	armada-385-turris-omnia.dtb \
+ 	armada-388-clearfog.dtb \
+ 	armada-388-clearfog-base.dtb \
+--- /dev/null
++++ b/arch/arm/boot/dts/marvell/armada-385-synology-ds216j.dts
+@@ -0,0 +1,412 @@
++// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
++/*
++ * Device Tree file for Synology DS216j
++ *
++ * Copyright (C) 2026 Simon Etzlstorfer
++ *
++ * The DS216j is a two bay NAS based on the Marvell Armada 385 (88F6820)
++ * SoC with 512 MB of RAM and 8 MB of SPI NOR flash.
++ *
++ * The hardware description is based on:
++ *  - Device Tree file for Synology DS116, by Willy Tarreau <w@1wt.eu>
++ *  - Device Tree file for Synology DS213j, by Arnaud EBALARD <arno@natisbad.org>
++ *  - armada-385-synology-ds216j.dts, by Alexei Evdokimenko
++ */
++
++/dts-v1/;
++
++#include <dt-bindings/gpio/gpio.h>
++
++#include "armada-385.dtsi"
++
++/ {
++	model = "Synology DS216j";
++	compatible = "synology,ds216j", "marvell,a385-gp", "marvell,armada385",
++		     "marvell,armada380";
++
++	aliases {
++		ethernet0 = &eth0;
++		egiga0 = &eth0;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++
++		/*
++		 * The bootloader appends its "bootargs" environment to
++		 * these without a separator, the trailing blank keeps
++		 * both apart.
++		 *
++		 * No root= parameter: the kernel finds the "rootfs"
++		 * partition of the SPI NOR flash on its own (see the
++		 * "linux,rootfs" property). A root=/dev/mtdblockN from
++		 * the bootloader would be renamed to "mangled_rootblock="
++		 * by CONFIG_MANGLE_BOOTARGS.
++		 */
++		bootargs = "console=ttyS0,115200 ";
++	};
++
++	memory@0 {
++		device_type = "memory";
++		reg = <0x00000000 0x20000000>; /* 512 MB */
++	};
++
++	/*
++	 * The internal registers are remapped to 0xf1000000 by the
++	 * bootloader.
++	 */
++	soc {
++		ranges = <MBUS_ID(0xf0, 0x01) 0 0xf1000000 0x100000
++			  MBUS_ID(0x01, 0x1d) 0 0xfff00000 0x100000
++			  MBUS_ID(0x09, 0x19) 0 0xf1100000 0x10000
++			  MBUS_ID(0x09, 0x15) 0 0xf1110000 0x10000
++			  MBUS_ID(0x0c, 0x04) 0 0xf1200000 0x100000>;
++	};
++
++	/*
++	 * The fan is driven by three GPIO lines which select the speed
++	 * steps of the 92 mm fan. Only one of them is asserted at a time.
++	 */
++	gpio-fan {
++		compatible = "gpio-fan";
++		pinctrl-names = "default";
++		pinctrl-0 = <&fan_ctrl_high_pins &fan_ctrl_mid_pins
++			     &fan_ctrl_low_pins>;
++		gpios = <&gpio1 18 GPIO_ACTIVE_HIGH>,
++			<&gpio1 17 GPIO_ACTIVE_HIGH>,
++			<&gpio1 16 GPIO_ACTIVE_HIGH>;
++		gpio-fan,speed-map = <   0 0>,
++				     < 400 1>,
++				     < 900 2>,
++				     <1300 3>,
++				     <1700 4>,
++				     <2100 5>,
++				     <2500 6>,
++				     <3000 7>;
++		#cooling-cells = <2>;
++	};
++
++	/* Disk error LEDs */
++	gpio-leds {
++		compatible = "gpio-leds";
++		pinctrl-names = "default";
++		pinctrl-0 = <&led_green_disk1_pins &led_green_disk2_pins
++			     &led_amber_disk1_pins &led_amber_disk2_pins>;
++
++		/*
++		 * The green disk LEDs are wired to mpp19/mpp20. These
++		 * pins are the ones the stock device tree used for
++		 * UART1 and the SATA presence detect signals, which is
++		 * why the LEDs did not work there. UART1 has been moved
++		 * to mpp17/mpp18 and the SATA0 presence detect to mpp21
++		 * below, so that all four disk LEDs are usable.
++		 */
++		disk1-led-green {
++			label = "synology:green:disk1";
++			gpios = <&gpio0 20 GPIO_ACTIVE_HIGH>;
++			linux,default-trigger = "disk-activity";
++			default-state = "keep";
++		};
++
++		disk2-led-green {
++			label = "synology:green:disk2";
++			gpios = <&gpio0 19 GPIO_ACTIVE_HIGH>;
++			linux,default-trigger = "disk-activity";
++			default-state = "keep";
++		};
++
++		disk1-led-amber {
++			label = "synology:amber:disk1";
++			gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++
++		disk2-led-amber {
++			label = "synology:amber:disk2";
++			gpios = <&gpio0 14 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++	};
++
++	usb3_0_phy: usb3-phy0 {
++		compatible = "usb-nop-xceiv";
++		vcc-supply = <&reg_usb3_0_vbus>;
++		#phy-cells = <0>;
++	};
++
++	usb3_1_phy: usb3-phy1 {
++		compatible = "usb-nop-xceiv";
++		vcc-supply = <&reg_usb3_1_vbus>;
++		#phy-cells = <0>;
++	};
++
++	reg_usb3_0_vbus: usb3-vbus0 {
++		compatible = "regulator-fixed";
++		regulator-name = "usb3-vbus0";
++		pinctrl-names = "default";
++		pinctrl-0 = <&xhci0_vbus_pins>;
++		regulator-min-microvolt = <5000000>;
++		regulator-max-microvolt = <5000000>;
++		enable-active-high;
++		regulator-always-on;
++		regulator-boot-on;
++		gpio = <&gpio1 26 GPIO_ACTIVE_HIGH>;
++	};
++
++	reg_usb3_1_vbus: usb3-vbus1 {
++		compatible = "regulator-fixed";
++		regulator-name = "usb3-vbus1";
++		pinctrl-names = "default";
++		pinctrl-0 = <&xhci1_vbus_pins>;
++		regulator-min-microvolt = <5000000>;
++		regulator-max-microvolt = <5000000>;
++		enable-active-high;
++		regulator-always-on;
++		regulator-boot-on;
++		gpio = <&gpio1 27 GPIO_ACTIVE_HIGH>;
++	};
++
++	/* Power enable for the first disk bay */
++	reg_sata0: pwr-sata0 {
++		compatible = "regulator-fixed";
++		regulator-name = "pwr_en_sata0";
++		pinctrl-names = "default";
++		pinctrl-0 = <&sata0_pwr_pin>;
++		regulator-min-microvolt = <12000000>;
++		regulator-max-microvolt = <12000000>;
++		enable-active-high;
++		regulator-always-on;
++		regulator-boot-on;
++		startup-delay-us = <5000000>;
++		gpio = <&gpio0 15 GPIO_ACTIVE_HIGH>;
++	};
++
++	reg_5v_sata0: v5-sata0 {
++		compatible = "regulator-fixed";
++		regulator-name = "v5.0-sata0";
++		regulator-min-microvolt = <5000000>;
++		regulator-max-microvolt = <5000000>;
++		vin-supply = <&reg_sata0>;
++	};
++
++	reg_12v_sata0: v12-sata0 {
++		compatible = "regulator-fixed";
++		regulator-name = "v12.0-sata0";
++		regulator-min-microvolt = <12000000>;
++		regulator-max-microvolt = <12000000>;
++		vin-supply = <&reg_sata0>;
++	};
++
++	/* Power enable for the second disk bay */
++	reg_sata1: pwr-sata1 {
++		compatible = "regulator-fixed";
++		regulator-name = "pwr_en_sata1";
++		pinctrl-names = "default";
++		pinctrl-0 = <&sata1_pwr_pin>;
++		regulator-min-microvolt = <12000000>;
++		regulator-max-microvolt = <12000000>;
++		enable-active-high;
++		regulator-always-on;
++		regulator-boot-on;
++		startup-delay-us = <5000000>;
++		gpio = <&gpio0 16 GPIO_ACTIVE_HIGH>;
++	};
++
++	reg_5v_sata1: v5-sata1 {
++		compatible = "regulator-fixed";
++		regulator-name = "v5.0-sata1";
++		regulator-min-microvolt = <5000000>;
++		regulator-max-microvolt = <5000000>;
++		vin-supply = <&reg_sata1>;
++	};
++
++	reg_12v_sata1: v12-sata1 {
++		compatible = "regulator-fixed";
++		regulator-name = "v12.0-sata1";
++		regulator-min-microvolt = <12000000>;
++		regulator-max-microvolt = <12000000>;
++		vin-supply = <&reg_sata1>;
++	};
++};
++
++/* Serial console */
++&uart0 {
++	status = "okay";
++	pinctrl-names = "default";
++	pinctrl-0 = <&uart0_pins>;
++};
++
++/*
++ * A PIC16F1829 MCU is connected to UART1. It handles the power and
++ * reset buttons and is also used to power off the NAS.
++ */
++&uart1 {
++	status = "okay";
++	pinctrl-names = "default";
++	pinctrl-0 = <&uart1_pins_alt>;
++};
++
++&{/soc/internal-regs} {
++	/*
++	 * The MCU cuts the power of the NAS when a magic sequence is
++	 * written to the UART1 registers.
++	 */
++	poweroff@12100 {
++		compatible = "synology,power-off";
++		reg = <0x12100 0x100>;
++		clocks = <&coreclk 0>;
++	};
++};
++
++&eth0 {
++	status = "okay";
++	phy-handle = <&phy0>;
++	phy-mode = "sgmii";
++	buffer-manager = <&bm>;
++	bm,pool-long = <0>;
++	bm,pool-short = <1>;
++	max-speed = <1000>;
++};
++
++&mdio {
++	status = "okay";
++	pinctrl-names = "default";
++	pinctrl-0 = <&mdio_pins>;
++
++	phy0: ethernet-phy@1 {
++		compatible = "ethernet-phy-ieee802.3-c22";
++		reg = <1>;
++		max-speed = <1000>;
++	};
++};
++
++&bm {
++	status = "okay";
++};
++
++&bm_bppi {
++	status = "okay";
++};
++
++&ahci0 {
++	status = "okay";
++	/*
++	 * The SATA0 presence detect signal is on mpp21, mpp19 and
++	 * mpp20 carry the green disk LEDs.
++	 */
++	pinctrl-names = "default";
++	pinctrl-0 = <&ahci0_pins>;
++	#address-cells = <1>;
++	#size-cells = <0>;
++
++	sata-port@0 {
++		reg = <0>;
++		target-supply = <&reg_5v_sata0>;
++	};
++
++	sata-port@1 {
++		reg = <1>;
++		target-supply = <&reg_5v_sata1>;
++	};
++};
++
++/* The DS216j has no external RTC, it uses the SoC internal one */
++&rtc {
++	status = "okay";
++};
++
++&usb3_0 {
++	status = "okay";
++	usb-phy = <&usb3_0_phy>;
++};
++
++&usb3_1 {
++	status = "okay";
++	usb-phy = <&usb3_1_phy>;
++};
++
++&spi0 {
++	status = "okay";
++	pinctrl-names = "default";
++	pinctrl-0 = <&spi0_pins>;
++
++	flash@0 {
++		#address-cells = <1>;
++		#size-cells = <1>;
++		compatible = "macronix,mx25l6405d", "jedec,spi-nor";
++		reg = <0>; /* Chip select 0 */
++		spi-max-frequency = <50000000>;
++		m25p,fast-read;
++	};
++};
++
++&pinctrl {
++	/*
++	 * UART1 is moved away from mpp19/mpp20, those pins carry the
++	 * presence detect signals of the two SATA ports.
++	 */
++	uart1_pins_alt: uart-pins-1-alt {
++		marvell,pins = "mpp17", "mpp18";
++		marvell,function = "ua1";
++	};
++
++	led_green_disk1_pins: led-pins-0 {
++		marvell,pins = "mpp20";
++		marvell,function = "gpio";
++	};
++
++	led_green_disk2_pins: led-pins-1 {
++		marvell,pins = "mpp19";
++		marvell,function = "gpio";
++	};
++
++	ahci0_pins: ahci-pins-0 {
++		marvell,pins = "mpp21";
++		marvell,function = "sata0";
++	};
++
++	led_amber_disk1_pins: led-pins-2 {
++		marvell,pins = "mpp13";
++		marvell,function = "gpio";
++	};
++
++	led_amber_disk2_pins: led-pins-3 {
++		marvell,pins = "mpp14";
++		marvell,function = "gpio";
++	};
++
++	sata0_pwr_pin: sata-pwr-pin-0 {
++		marvell,pins = "mpp15";
++		marvell,function = "gpio";
++	};
++
++	sata1_pwr_pin: sata-pwr-pin-1 {
++		marvell,pins = "mpp16";
++		marvell,function = "gpio";
++	};
++
++	fan_ctrl_high_pins: fan-ctrl-pins-0 {
++		marvell,pins = "mpp48";
++		marvell,function = "gpio";
++	};
++
++	fan_ctrl_mid_pins: fan-ctrl-pins-1 {
++		marvell,pins = "mpp49";
++		marvell,function = "gpio";
++	};
++
++	fan_ctrl_low_pins: fan-ctrl-pins-2 {
++		marvell,pins = "mpp50";
++		marvell,function = "gpio";
++	};
++
++	xhci0_vbus_pins: xhci0-vbus-pins {
++		marvell,pins = "mpp58";
++		marvell,function = "gpio";
++	};
++
++	xhci1_vbus_pins: xhci1-vbus-pins {
++		marvell,pins = "mpp59";
++		marvell,function = "gpio";
++	};
++};

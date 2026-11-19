@@ -509,4 +509,26 @@ define Device/zyxel_nas326
   KERNEL := kernel-bin | append-dtb
   KERNEL_INITRAMFS := kernel-bin | append-dtb | uImage none
 endef
+
+define Device/synology_ds216j
+  DEVICE_VENDOR := Synology
+  DEVICE_MODEL := DS216j
+  KERNEL_SIZE := 4096k
+  IMAGE_SIZE := 7040k
+  FILESYSTEMS := squashfs ubifs
+  KERNEL := kernel-bin | append-dtb | uImage none
+  KERNEL_INITRAMFS := kernel-bin | append-dtb | uImage none
+  DEVICE_DTS := armada-385-synology-ds216j
+  IMAGES := sysupgrade.bin
+  IMAGE/sysupgrade.bin := append-kernel | pad-to 4096k | append-rootfs | \
+                          check-size | append-metadata
+  DEVICE_PACKAGES := \
+    block-mount kmod-usb-storage kmod-fs-ext4 e2fsprogs \
+    kmod-hwmon-drivetemp kmod-hwmon-gpiofan \
+    kmod-fs-ksmbd kmod-fs-nfsd \
+    -ppp -ppp-mod-pppoe -kmod-nft-offload -dnsmasq -odhcpd-ipv6only \
+    -firewall4 -nftables
+endef
+
 TARGET_DEVICES += zyxel_nas326
+TARGET_DEVICES += synology_ds216j
