@@ -1,0 +1,29 @@
+#!/bin/sh /etc/rc.common
+# Setzt "autoload=yes" im u-boot-Environment.
+#
+# Das Environment der Synology-NAS kommt mit "autoload=no" - nach dem
+# Einschalten wartet der u-boot dann auf den Power-Taster, das Geraet
+# bootet also nicht von selbst (das ist bei einem NAS gewollt, wenn der
+# DSM "Restart automatically after power failure" abschaltet).
+#
+# Wer den Power-Taster nicht braucht (z. B. weil das Geraet hinter einer
+# schaltbaren Steckdose haengt), setzt hier "autoload=yes" - dann bootet
+# der u-boot nach dem Power-Cycle von selbst.
+#
+# Das Environment wird nur geschrieben, wenn es noch nicht passt.
+
+USE_PROCD=1
+START=13
+
+do_start() {
+	local current
+	current="$(fw_printenv autoload 2>/dev/null | sed -n 's/^autoload=//p')"
+
+	if [ "$current" = "yes" ]; then
+		return 0
+	fi
+
+	logger -t uboot-autoload "autoload ist '${current:-nicht gesetzt}', setze auf yes"
+	fw_setenv autoload yes 2>/dev/null || \
+		logger -t uboot-autoload "Konnte autoload nicht setzen"
+}
