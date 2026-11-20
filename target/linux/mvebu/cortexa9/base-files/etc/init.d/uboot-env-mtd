@@ -1,0 +1,39 @@
+#!/bin/sh /etc/rc.common
+# Die Nummer der u-boot-Environment-Partition ist nicht stabil:
+#
+# Solange ein SquashFS im SPI-Flash liegt, spaltet der Kernel die
+# rootfs-Partition und die Environment landet auf mtd6. Steht die
+# Original-Firmware von Synology im Flash (kein SquashFS), gibt es kein
+# rootfs_data und die Environment ist mtd5.
+#
+# fw_setenv und fw_printenv brauchen aber die richtige Nummer, sonst
+# finden sie die Environment nicht ("Bad CRC" bzw. "Can't open
+# /dev/mtdN"). Die Datei /etc/fw_env.config wird von uboot-envtools nur
+# einmal erzeugt (uci-defaults), deshalb wird sie hier bei jedem Start
+# nachgezogen.
+
+USE_PROCD=1
+START=12
+
+find_env_mtd() {
+	local idx name
+	for idx in $(seq 0 15); do
+		name="$(cat /sys/class/mtd/mtd$idx/name 2>/dev/null)"
+		[ "$name" = "u-boot-env" ] && {
+			echo "/dev/mtd$idx"
+			return
+		}
+	done
+}
+
+do_start() {
+	local dev
+	dev="$(find_env_mtd)"
+	[ -n "$dev" ] || return 0
+
+	# passt die Konfiguration schon?
+	grep -q "^${dev} " /etc/fw_env.config 2>/dev/null && return 0
+
+	echo "$dev 0x0 0x10000 0x10000 1" > /etc/fw_env.config
+	logger -t uboot-env "environment partition changed, using $dev"
+}
