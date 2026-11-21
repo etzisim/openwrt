@@ -1,0 +1,282 @@
+#!/bin/sh
+# synology-mcu - Steuerung und Event-Daemon fuer den Synology System-MCU
+# (PIC16F1829 auf DS116/DS216j bzw. TI MSP430F2111 auf DS213j an UART1 =
+# /dev/ttyS1 mit 9600 Baud, 8N1).
+#
+# Quellen:
+#   - Synology GPL: libsynosdk/gpl/synosdk/external.h (UART2_CMD_*)
+#   - Mainline Linux: drivers/power/reset/qnap-poweroff.c (synology,power-off)
+#   - Mainline DTS: armada-385-synology-ds116.dts / ds216j.dts / ds213j.dts
+#
+# WICHTIG fuer "Power-On after Power Loss" (Auto-Power-On nach Stromausfall):
+#   0x71 ('q') = UART2_CMD_RCPOWERON  -> schaltet Auto-Power-On im MCU EIN
+#   0x70 ('p') = UART2_CMD_RCPOWEROFF -> schaltet Auto-Power-On im MCU AUS
+#
+# Dieses Skript ist reines POSIX-sh (funktioniert unter OpenWrt und Alpine
+# BusyBox ash ohne bash).
+
+set -e
+
+DEV="${SYNO_MCU_DEV:-/dev/ttyS1}"
+BAUD="9600"
+
+# Initialisiert UART1 auf 9600 8N1 raw ohne Echo
+init_uart() {
+	[ -c "$DEV" ] || {
+		echo "FEHLER: $DEV existiert nicht (UART1 im DTS aktiviert?)" >&2
+		return 1
+	}
+	stty -F "$DEV" "$BAUD" cs8 -cstopb -parenb raw -echo -echok -icrnl -ixon -ixoff -opost 2>/dev/null || \
+		stty "$BAUD" cs8 -cstopb -parenb raw -echo < "$DEV" 2>/dev/null || true
+}
+
+# Schickt rohe Bytes (z. B. "\x71" oder "4") an den MCU
+send_raw() {
+	init_uart
+	printf "%b" "$1" > "$DEV"
+}
+
+log_msg() {
+	logger -t synology-mcu "$1" 2>/dev/null || echo "[synology-mcu] $1" >&2
+}
+
+usage() {
+	cat <<'EOF'
+Aufruf: synology-mcu <Befehl> [Argumente]
+
+System & Power-Management (libsynosdk UART2_CMD_*):
+  boot-ready                 Setzt beim Systemstart:
+                               - Auto-Power-On nach Stromausfall EIN ('q' / 0x71)
+                               - Wake-on-LAN im MCU EIN             ('l' / 0x6C)
+                               - Power-LED dauerhaft blau           ('4' / 0x34)
+                               - Status-LED dauerhaft gruen         ('8' / 0x38)
+                               - Kurzer Ready-Piepton               ('2' / 0x32)
+  poweron-recovery on|off    Auto-Power-On nach Stromausfall ('q'=0x71 / 'p'=0x70)
+  schedule-poweron on|off    Zeitgesteuertes Einschalten     ('s'=0x73 / 'r'=0x72)
+  wol on                     Wake-on-LAN im MCU aktivieren   ('l'=0x6C)
+  poweroff                   Hardware-Power-Off sofort!      ('1'=0x31)
+  reset                      Hardware-Reset sofort!          ('C'=0x43)
+
+Signalton (Buzzer):
+  beep short                 Kurzer Piepton (~200 ms, '2'=0x32)
+  beep long                  Langer Piepton (~500 ms, '3'=0x33)
+
+LED-Steuerung:
+  led power on|blink|off     Blaue Power-LED   ('4'=0x34, '5'=0x35, '6'=0x36)
+  led status off             Status-LED aus    ('7'=0x37)
+  led status green           Status-LED gruen  ('8'=0x38)
+  led status green-blink     Status-LED gruen blinkend ('9'=0x39)
+  led status orange          Status-LED orange (':'=0x3A)
+  led status orange-blink    Status-LED orange blinkend (';'=0x3B)
+  led status breath          Status-LED pulsierend ('='=0x3D)
+  led usb on|blink|off       USB/Copy/D8-LED   ('@'=0x40, 'A'=0x41, 'B'=0x42)
+  led lan10g on|off          10G-LAN-LED       ('J'=0x4A, 'K'=0x4B)
+  led mirror off|green|green-blink|orange|orange-blink ('P'..'T' = 0x50..0x54)
+
+Luefter & Ueberwachung:
+  fancheck on|off            Luefter-Ueberwachung im MCU ('u'=0x75 / 't'=0x74)
+  cpufancheck on|off         CPU-Luefter-Ueberwachung    ('EC1' / 'EC0')
+  fan-rps-toggle             Luefter-RPS-Report umschalten ('U'=0x55)
+  pwm-duty <00..99>          Luefter-PWM Duty-Cycle setzen ('V'<XX>, 0x56)
+  pwm-freq <00..99>          Luefter-PWM Frequenz (Hz)     ('W'<XX>, 0x57)
+
+Diagnose & Daemon:
+  unique                     Liest MCU-Kennung ('R'=0x52, UART2_CMD_GET_UNIQUE_CMD)
+  raw <Zeichen|\xHEX>        Beliebiges Byte/String direkt an /dev/ttyS1 senden
+  daemon [--hard-reset]      Lauscht auf /dev/ttyS1 fuer Taster-/Luefter-Events:
+                               0x30 ('0') -> Power-Taster  -> sauberer poweroff
+                               0x60 ('`') -> USB-Taster    -> Hook / Log
+                               0x61 ('a') -> Reset-Taster  -> reboot (oder 'C')
+                               0x66 ('f') -> Luefter-Ausfall
+                               0x67 ('g') -> CPU-Luefter-Ausfall
+EOF
+}
+
+# Liest im Daemon-Modus jeweils 1 Byte (Hex) von /dev/ttyS1
+run_daemon() {
+	hard_reset=0
+	[ "${1:-}" = "--hard-reset" ] && hard_reset=1
+	init_uart
+	log_msg "Starte MCU-Event-Daemon auf $DEV (${BAUD} Baud)"
+
+	while :; do
+		# 1 Byte lesen und als zweistelligen Hex-Code auswerten (POSIX/BusyBox-konform:
+		# Standard-OpenWrt hat hexdump in BusyBox aktiv, Alpine hat hexdump und od)
+		if command -v hexdump >/dev/null 2>&1; then
+			hex=$(dd if="$DEV" bs=1 count=1 2>/dev/null | hexdump -v -e '1/1 "%02x"')
+		else
+			hex=$(dd if="$DEV" bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
+		fi
+		[ -n "$hex" ] || { sleep 1; continue; }
+
+		case "$hex" in
+			30) # '0' = UART2_CMD_BUTTON_POWER
+				log_msg "Power-Taster gedrueckt (0x30) -> fahre System herunter"
+				send_raw '\x35\x32' # Power-LED blinken + kurzer Piep
+				if [ -x /etc/synology-mcu.d/power-button ]; then
+					/etc/synology-mcu.d/power-button
+				else
+					poweroff
+				fi
+				;;
+			60) # '`' = UART2_CMD_BUTTON_USB
+				log_msg "USB-Copy-Taster gedrueckt (0x60)"
+				send_raw '\x32'
+				[ -x /etc/synology-mcu.d/usb-button ] && /etc/synology-mcu.d/usb-button
+				;;
+			61) # 'a' = UART2_CMD_BUTTON_RESET
+				log_msg "Reset-Taster gedrueckt (0x61)"
+				send_raw '\x32'
+				if [ -x /etc/synology-mcu.d/reset-button ]; then
+					/etc/synology-mcu.d/reset-button
+				elif [ "$hard_reset" -eq 1 ]; then
+					send_raw '\x43' # 'C' = Hard-Reset durch den MCU
+				else
+					reboot
+				fi
+				;;
+			66) # 'f' = UART2_CMD_FAN_FAILURE
+				log_msg "WARNUNG: Gehaeuseluefter-Ausfall vom MCU gemeldet (0x66)!"
+				send_raw '\x3b' # Status-LED orange blinkend
+				;;
+			67) # 'g' = UART2_CMD_CPUFAN_FAILURE
+				log_msg "WARNUNG: CPU-Luefter-Ausfall vom MCU gemeldet (0x67)!"
+				send_raw '\x3b'
+				;;
+			*)
+				log_msg "Unbekanntes MCU-Event empfangen: 0x$hex"
+				;;
+		esac
+	done
+}
+
+cmd="${1:-}"
+[ -n "$cmd" ] || { usage; exit 1; }
+shift
+
+case "$cmd" in
+	boot-ready)
+		# 'q' (0x71) = Power-On after Power Loss aktivieren
+		# 'l' (0x6c) = Wake-on-LAN aktivieren
+		# '4' (0x34) = Power-LED dauerhaft blau (beendet das Boot-Blinken)
+		# '8' (0x38) = Status-LED dauerhaft gruen
+		# 'B' (0x42) = Mainboard/USB-LED aus
+		# '2' (0x32) = Kurzer Ready-Piepton
+		send_raw '\x71\x6c\x34\x38\x42\x32'
+		log_msg "boot-ready gesetzt: Auto-Power-On=EIN (0x71 'q'), WoL=EIN (0x6c 'l'), Power-LED=blau, Status-LED=gruen"
+		;;
+	poweron-recovery)
+		case "${1:-}" in
+			on|1|enable|yes)
+				send_raw '\x71' # 'q' = UART2_CMD_RCPOWERON
+				log_msg "Auto-Power-On nach Stromausfall aktiviert ('q' / 0x71)"
+				;;
+			off|0|disable|no)
+				send_raw '\x70' # 'p' = UART2_CMD_RCPOWEROFF
+				log_msg "Auto-Power-On nach Stromausfall deaktiviert ('p' / 0x70)"
+				;;
+			*) echo "Aufruf: $0 poweron-recovery on|off" >&2; exit 1 ;;
+		esac
+		;;
+	schedule-poweron)
+		case "${1:-}" in
+			on|1|enable)   send_raw '\x73' ;; # 's' = 0x73
+			off|0|disable) send_raw '\x72' ;; # 'r' = 0x72
+			*) echo "Aufruf: $0 schedule-poweron on|off" >&2; exit 1 ;;
+		esac
+		;;
+	wol)
+		case "${1:-on}" in
+			on|1|enable) send_raw '\x6c' ;; # 'l' = 0x6C
+			*) echo "Aufruf: $0 wol on" >&2; exit 1 ;;
+		esac
+		;;
+	poweroff)
+		send_raw '\x31' # '1' = 0x31
+		;;
+	reset)
+		send_raw '\x43' # 'C' = 0x43
+		;;
+	beep)
+		case "${1:-short}" in
+			short|1) send_raw '\x32' ;; # '2' = 0x32
+			long|2)  send_raw '\x33' ;; # '3' = 0x33
+			*) echo "Aufruf: $0 beep short|long" >&2; exit 1 ;;
+		esac
+		;;
+	led)
+		target="${1:-}"
+		state="${2:-}"
+		case "$target:$state" in
+			power:on)            send_raw '\x34' ;; # '4'
+			power:blink)         send_raw '\x35' ;; # '5'
+			power:off)           send_raw '\x36' ;; # '6'
+			status:off)          send_raw '\x37' ;; # '7'
+			status:green)        send_raw '\x38' ;; # '8'
+			status:green-blink)  send_raw '\x39' ;; # '9'
+			status:orange|status:amber)             send_raw '\x3a' ;; # ':'
+			status:orange-blink|status:amber-blink) send_raw '\x3b' ;; # ';'
+			status:breath)       send_raw '\x3d' ;; # '='
+			usb:on|copy:on|d8:on)       send_raw '\x40' ;; # '@'
+			usb:blink|copy:blink|d8:blink) send_raw '\x41' ;; # 'A'
+			usb:off|copy:off|d8:off)    send_raw '\x42' ;; # 'B'
+			lan10g:on)           send_raw '\x4a' ;; # 'J'
+			lan10g:off)          send_raw '\x4b' ;; # 'K'
+			mirror:off)          send_raw '\x50' ;; # 'P'
+			mirror:green)        send_raw '\x51' ;; # 'Q'
+			mirror:green-blink)  send_raw '\x52' ;; # 'R'
+			mirror:orange)       send_raw '\x53' ;; # 'S'
+			mirror:orange-blink) send_raw '\x54' ;; # 'T'
+			*) echo "Unbekannte LED-Kombination: $target $state" >&2; usage; exit 1 ;;
+		esac
+		;;
+	fancheck)
+		case "${1:-}" in
+			on|1|enable)   send_raw '\x75' ;; # 'u' = 0x75
+			off|0|disable) send_raw '\x74' ;; # 't' = 0x74
+			*) echo "Aufruf: $0 fancheck on|off" >&2; exit 1 ;;
+		esac
+		;;
+	cpufancheck)
+		case "${1:-}" in
+			on|1|enable)   send_raw 'EC1' ;;
+			off|0|disable) send_raw 'EC0' ;;
+			*) echo "Aufruf: $0 cpufancheck on|off" >&2; exit 1 ;;
+		esac
+		;;
+	fan-rps-toggle)
+		send_raw '\x55' # 'U' = 0x55
+		;;
+	pwm-duty)
+		val="${1:?Duty-Wert 00..99 angeben}"
+		send_raw "V${val}"
+		;;
+	pwm-freq)
+		val="${1:?Frequenz 00..99 angeben}"
+		send_raw "W${val}"
+		;;
+	unique|id)
+		init_uart
+		( dd if="$DEV" bs=1 count=32 2>/dev/null | tr -cd '[:print:]\n'; echo ) &
+		reader=$!
+		printf '\x52' > "$DEV"
+		sleep 1
+		kill "$reader" 2>/dev/null || true
+		wait "$reader" 2>/dev/null || true
+		;;
+	raw)
+		arg="${1:?Zeichen oder \\xHEX angeben}"
+		send_raw "$arg"
+		;;
+	daemon|listen)
+		run_daemon "${1:-}"
+		;;
+	-h|--help|help)
+		usage
+		;;
+	*)
+		echo "Unbekannter Befehl: $cmd" >&2
+		usage
+		exit 1
+		;;
+esac

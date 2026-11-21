@@ -26,7 +26,7 @@ find_env_mtd() {
 	done
 }
 
-do_start() {
+start_service() {
 	local dev
 	dev="$(find_env_mtd)"
 	[ -n "$dev" ] || return 0

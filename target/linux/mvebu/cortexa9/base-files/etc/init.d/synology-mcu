@@ -1,0 +1,42 @@
+#!/bin/sh /etc/rc.common
+# Initialisiert den Synology System-MCU (PIC16F1829 / MSP430 an /dev/ttyS1,
+# 9600 Baud) beim Systemstart:
+#   - 'q' (0x71, UART2_CMD_RCPOWERON): Auto-Power-On nach Stromausfall EIN
+#   - 'l' (0x6c, UART2_CMD_WOL_ENABLE): Wake-on-LAN EIN
+#   - '4' (0x34, UART2_CMD_LED_POWER_ON): Power-LED dauerhaft blau
+#   - '8' (0x38, UART2_CMD_LED_HD_GS): Status-LED dauerhaft gruen
+#   - '2' (0x32, UART2_CMD_BUZZER_SHORT): kurzer Ready-Piep
+# und startet den Event-Daemon fuer Power- (0x30) und Reset-Taster (0x61).
+
+USE_PROCD=1
+START=95
+STOP=10
+
+board_is_synology() {
+	case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in
+		synology,*) return 0 ;;
+	esac
+	grep -qi "synology" /proc/device-tree/compatible 2>/dev/null
+}
+
+start_service() {
+	board_is_synology || return 0
+	[ -c /dev/ttyS1 ] || return 0
+	[ -x /usr/sbin/synology-mcu ] || return 0
+
+	/usr/sbin/synology-mcu boot-ready
+
+	procd_open_instance
+	procd_set_param command /usr/sbin/synology-mcu daemon
+	procd_set_param respawn
+	procd_close_instance
+}
+
+stop_service() {
+	board_is_synology || return 0
+	[ -c /dev/ttyS1 ] || return 0
+	[ -x /usr/sbin/synology-mcu ] || return 0
+
+	# Beim Herunterfahren Power-LED blinken lassen, Auto-Power-On ('q') aktiv halten
+	/usr/sbin/synology-mcu raw '\x71\x35' 2>/dev/null || true
+}
